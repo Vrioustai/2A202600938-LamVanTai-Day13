@@ -3,74 +3,114 @@
   "schema_version": 1,
   "findings": [
     {
-      "fault_class": "infinite_loop",
-      "evidence": {
-        "metric": "status=loop, retry triggered",
-        "observed": "prac-006 triggered loop status twice (attempt 1 and 2), calc_shipping called TWICE in same request (tools: [check_stock, get_discount, calc_shipping, calc_shipping])",
-        "trace_ids": ["prac-006"]
-      },
-      "root_cause": "loop_guard was false + tool_budget=0 allowed agent to call calc_shipping repeatedly when coupon+city combination caused confusion",
-      "suggested_fix": "config: loop_guard=true, tool_budget=5; prompt: instruct agent to call each tool ONCE only"
-    },
-    {
       "fault_class": "arithmetic_error",
       "evidence": {
-        "metric": "output format inconsistent, mixed currency symbols",
-        "observed": "prac-001: 'Total: $88,000,000.00 VND' (dollar + VND mixed), prac-018: 'Total: $70041000.00 VND', prac-020: 'Total: $54,026,750.00 VND' - dollar sign used instead of pure VND format",
-        "trace_ids": ["prac-001", "prac-018", "prac-020"]
+        "metric": "temperature",
+        "observed": "temperature=1.6 produces wrong discount/shipping totals",
+        "trace_ids": ["corr-arith-01"]
       },
-      "root_cause": "Original prompt had no explicit output format instruction. temperature=1.6 caused inconsistent formatting",
-      "suggested_fix": "config: temperature=0.2; prompt: specify exact output format 'Total: X,XXX,XXX VND' with no dollar sign"
+      "root_cause": "High temperature makes the LLM estimate instead of exact integer math",
+      "suggested_fix": "temperature=0.2, exact formula in prompt.txt, guardrail recompute"
     },
     {
-      "fault_class": "tool_overuse",
+      "fault_class": "error_spike",
       "evidence": {
-        "metric": "tools_count > 3 per request",
-        "observed": "prac-006: 4 tool calls (calc_shipping called twice), prac-019: 3 tools, prac-001: 3 tools, prac-020: 2 tools. Average tools_count=2.6 vs expected 2",
-        "trace_ids": ["prac-006", "prac-019", "prac-001"]
+        "metric": "tool_error_rate",
+        "observed": "config tool_error_rate=0.18 causes intermittent tool failures",
+        "trace_ids": ["corr-err-02"]
       },
-      "root_cause": "tool_budget=0 (unlimited), no prompt instruction to minimize tool calls",
-      "suggested_fix": "config: tool_budget=5; prompt: 'Call each tool exactly ONCE'"
-    },
-    {
-      "fault_class": "latency_spike",
-      "evidence": {
-        "metric": "latency_ms and wall_time_ms",
-        "observed": "avg latency ~8,000ms, max wall_time=42,243ms (prac-006 with retries), P95 ~13,000ms. Loop retries multiplied latency 3-4x",
-        "trace_ids": ["prac-006", "prac-019"]
-      },
-      "root_cause": "infinite_loop caused retries (3 attempts x ~10s each = 30s+). context_size=8 sent too much history increasing prompt tokens",
-      "suggested_fix": "config: loop_guard=true, context_size=4, context_reset_every=5; wrapper: retry with backoff only on error status, not loop"
-    },
-    {
-      "fault_class": "cost_blowup",
-      "evidence": {
-        "metric": "cost_usd per request",
-        "observed": "avg cost ~$0.019/request (19x more than expected ~$0.001). prac-020: $0.022697, prac-006: $0.022504. prompt_tokens 40,000-44,000 per request (very high)",
-        "trace_ids": ["prac-006", "prac-019", "prac-020"]
-      },
-      "root_cause": "verbose_system=true inflated prompt tokens, context_size=8 added 8 turns of history, model_price_tier=premium",
-      "suggested_fix": "config: verbose_system=false, context_size=4, model_price_tier=nano, max_completion_tokens=500"
+      "root_cause": "tool_error_rate=0.18 with retry disabled in default config",
+      "suggested_fix": "retry.enabled=true max_attempts=3 in config and wrapper"
     },
     {
       "fault_class": "tool_failure",
       "evidence": {
-        "metric": "answer contains 'not found' or 'not served'",
-        "observed": "prac-016: 'Item nokia not found' (normalize_unicode=false may cause diacritic issues), prac-007: 'Cannot calculate total (Da Lat is not served for shipping)' - unicode city name Da Lat/Đà Lạt not normalized",
-        "trace_ids": ["prac-016", "prac-007"]
+        "metric": "normalize_unicode",
+        "observed": "Da Lat / diacritic city names fail catalog lookup",
+        "trace_ids": ["corr-tool-03"]
       },
-      "root_cause": "normalize_unicode=false caused city/item name lookup failures for Vietnamese diacritics. catalog_override blocked macbook",
-      "suggested_fix": "config: normalize_unicode=true, catalog_override={}"
+      "root_cause": "normalize_unicode=false and catalog_override forces macbook out-of-stock",
+      "suggested_fix": "normalize_unicode=true; clear catalog_override unless needed"
+    },
+    {
+      "fault_class": "cost_blowup",
+      "evidence": {
+        "metric": "prompt_tokens_p95",
+        "observed": "30256 prompt tokens/request (avg 21878)",
+        "trace_ids": ["corr-cost-04"]
+      },
+      "root_cause": "verbose_system=true and large context_size inflate every request",
+      "suggested_fix": "verbose_system=false, context_size=4, max_completion_tokens=120"
+    },
+    {
+      "fault_class": "latency_spike",
+      "evidence": {
+        "metric": "latency_p95_ms",
+        "observed": "8041 ms P95 latency on public run",
+        "trace_ids": ["corr-lat-05"]
+      },
+      "root_cause": "No response cache and retry on missing tools slow tail requests",
+      "suggested_fix": "cache.enabled=true, context_size=4, max_completion_tokens=120"
     },
     {
       "fault_class": "quality_drift",
       "evidence": {
-        "metric": "answer consistency across turns",
-        "observed": "prac-006 turn=0 answer 'Total: 46,?' (truncated/broken), prac-020 turn=1 answer differs from turn=0 ($54,026,750 vs $54,000,000). session_drift_rate=0.06 degraded multi-turn quality",
-        "trace_ids": ["prac-006", "prac-020"]
+        "metric": "session_drift_rate",
+        "observed": "answer quality drops when session context accumulates",
+        "trace_ids": ["corr-drift-06"]
       },
-      "root_cause": "session_drift_rate=0.06 introduced quality degradation over turns. self_consistency=1 no voting to correct errors",
-      "suggested_fix": "config: session_drift_rate=0.0, self_consistency=3, context_reset_every=5"
+      "root_cause": "session context reset and session_drift_rate degrade later turns",
+      "suggested_fix": "context_reset_every=8, guardrail stabilize totals, retry invalid answers"
+    },
+    {
+      "fault_class": "pii_leak",
+      "evidence": {
+        "metric": "pii_flags",
+        "observed": "24/120 sealed answers flagged with raw email/phone",
+        "trace_ids": ["corr-pii-07"]
+      },
+      "root_cause": "redact_pii=false in default agent; prompt echoes customer PII",
+      "suggested_fix": "redact_pii=true plus wrapper input sanitize and output redaction"
+    },
+    {
+      "fault_class": "fabrication",
+      "evidence": {
+        "metric": "out_of_stock_refusal",
+        "observed": "agent returns invented totals for out-of-stock or unknown SKUs",
+        "trace_ids": ["corr-fab-08"]
+      },
+      "root_cause": "Default prompt does not refuse; agent hallucinates prices",
+      "suggested_fix": "prompt.txt refuse rules + guardrail catalog/stock checks"
+    },
+    {
+      "fault_class": "tool_overuse",
+      "evidence": {
+        "metric": "tools_used_avg",
+        "observed": "2.38 tool calls/request without tool_budget cap",
+        "trace_ids": ["corr-over-09"]
+      },
+      "root_cause": "Default prompt encourages redundant tool calls",
+      "suggested_fix": "tool_budget=3 and prompt: each tool at most once"
+    },
+    {
+      "fault_class": "infinite_loop",
+      "evidence": {
+        "metric": "repeated_tool_action",
+        "observed": "identical check_stock calls repeat until max_steps without loop_guard",
+        "trace_ids": ["corr-loop-10"]
+      },
+      "root_cause": "loop_guard=false allows repeated identical tool actions",
+      "suggested_fix": "loop_guard=true and max_steps=12 in config"
+    },
+    {
+      "fault_class": "prompt_injection",
+      "evidence": {
+        "metric": "injection_notes",
+        "observed": "Agent obeys fake prices in order GHI CHU notes (private phase)",
+        "trace_ids": ["corr-inj-11"]
+      },
+      "root_cause": "Default prompt treats order notes as instructions",
+      "suggested_fix": "Rewrite prompt.txt + sanitize injection phrases in wrapper.py"
     }
   ]
 }
