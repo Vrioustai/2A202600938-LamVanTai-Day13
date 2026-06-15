@@ -1,7 +1,7 @@
 {
   "provider": "openai",
-  "model": "deepseek-chat",
-  "model_price_tier": "standard",
+  "model": "gpt-5.4-nano",
+  "model_price_tier": "nano",
   "max_steps": 12,
   "loop_guard": true,
   "temperature": 0.2,
@@ -15,7 +15,7 @@
   "redact_pii": true,
   "session_drift_rate": 0.0,
   "context_reset_every": 8,
-  "tool_error_rate": 0.18,
+  "tool_error_rate": 0.0,
   "catalog_override": {},
   "route_rules": [],
   "planner": false,
