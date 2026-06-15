@@ -1,6 +1,6 @@
-"""Observability + mitigation layer - token-optimized version"""
+"""Observability + mitigation layer - token-optimized + answer post-processing"""
 from __future__ import annotations
-import time, re, json, hashlib
+import time, re, json, hashlib, math
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 def log(tag, data):
@@ -27,7 +27,132 @@ def has_loop(trace):
             return True
     return False
 
-# ── Input sanitization (injection guard) ─────────────────────────────────────
+# ── Arithmetic validator: recompute from trace ───────────────────────────────
+def extract_tool_results(trace):
+    """Extract tool call results from trace"""
+    tools = {}
+    if not trace:
+        return tools
+    for step in trace:
+        action = step.get('action', '')
+        result = step.get('result', {})
+        obs = step.get('observation', step.get('result', {}))
+        if isinstance(obs, str):
+            try: obs = json.loads(obs)
+            except: obs = {}
+        if action == 'check_stock':
+            tools['stock'] = obs
+        elif action == 'get_discount':
+            tools['discount'] = obs
+        elif action == 'calc_shipping':
+            tools['shipping'] = obs
+    return tools
+
+def recompute_total(trace, quantity):
+    """Try to recompute total from tool trace"""
+    t = extract_tool_results(trace)
+    stock = t.get('stock', {})
+    discount = t.get('discount', {})
+    shipping = t.get('shipping', {})
+
+    price = None
+    # Try various field names
+    for f in ['unit_price', 'price', 'price_vnd', 'unit_price_vnd']:
+        if f in stock:
+            try: price = int(stock[f]); break
+            except: pass
+
+    if price is None:
+        return None
+
+    # subtotal
+    try: qty = int(quantity)
+    except: return None
+    subtotal = price * qty
+
+    # discount
+    disc_pct = 0
+    for f in ['discount_percent', 'discount', 'percent', 'rate']:
+        if f in discount:
+            try: disc_pct = int(discount[f]); break
+            except: pass
+    discounted = subtotal * (100 - disc_pct) // 100
+
+    # shipping
+    ship_cost = 0
+    for f in ['shipping_cost', 'cost', 'fee', 'shipping_fee']:
+        if f in shipping:
+            try: ship_cost = int(shipping[f]); break
+            except: pass
+
+    total = discounted + ship_cost
+    return total
+
+def validate_and_fix_answer(answer, trace, question):
+    """Validate arithmetic in answer, fix if wrong"""
+    if not answer or 'VND' not in answer:
+        return answer, False
+    # Extract quantity from question
+    m = re.search(r'(\d+)\s+(?:cái|chiếc|sản phẩm|cụm|bộ)?\s*(?:iPhone|iPad|MacBook|AirPods|airpods|macbook|iphone|ipad)', 
+                  question, re.I)
+    if not m:
+        m = re.search(r'mua\s+(\d+)', question, re.I)
+    if not m:
+        return answer, False
+    qty = m.group(1)
+
+    computed = recompute_total(trace, qty)
+    if computed is None:
+        return answer, False
+
+    # Extract current total from answer
+    m2 = re.search(r'Tổng thanh toán:\s*([\d,]+)\s*VND', answer)
+    if not m2:
+        return answer, False
+    current_str = m2.group(1).replace(',', '')
+    try:
+        current = int(current_str)
+    except:
+        return answer, False
+
+    if current == computed:
+        return answer, False  # already correct
+
+    # Fix it
+    fixed = f"Tổng thanh toán: {computed:,} VND."
+    return fixed, True
+_LIEN_HE = re.compile(r'\s*\(?\s*lien\s*he\s*:?\s*\[REDACTED\]\s*\)?\.?', re.I)
+_EMAIL_TRAIL = re.compile(r'\s*\(?\s*[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*\)?', re.I)
+_PHONE_TRAIL = re.compile(r'\s*\(?\s*0[0-9]{9,10}\s*\)?', re.I)
+
+def clean_answer(answer: str) -> str:
+    """Strip PII traces and fix number formatting from answer"""
+    if not answer:
+        return answer
+    # 1. Remove (lien he: [REDACTED]) patterns
+    answer = _LIEN_HE.sub('', answer)
+    # 2. Remove any remaining email/phone that slipped through
+    answer = _EMAIL_TRAIL.sub('', answer)
+    answer = _PHONE_TRAIL.sub('', answer)
+    # 3. Fix bad decimal in VND: 54,000,317,50 → remove wrong last group
+    answer = re.sub(r'([\d,]+),(\d{2})\s*VND',
+                    lambda m: m.group(0).replace(f",{m.group(2)} VND", " VND")
+                    if len(m.group(2)) == 2 else m.group(0), answer)
+    # 4. Fix missing commas: 360028000 VND → 360,028,000 VND
+    def add_commas(m):
+        num_str = m.group(1).replace(',','')
+        try:
+            n = int(num_str)
+            formatted = f"{n:,}"
+            return f"Tổng thanh toán: {formatted} VND"
+        except:
+            return m.group(0)
+    answer = re.sub(r'Tổng thanh toán:\s*(\d[\d,]*\d)\s*VND', add_commas, answer)
+    # 5. Strip trailing noise
+    answer = answer.strip()
+    if answer and 'VND' in answer and not answer.endswith('.'):
+        answer = answer + '.'
+    return answer
 _INJECT = re.compile(
     r'(ignore|disregard|bỏ qua).{0,30}(instruction|prompt|system|hướng dẫn)'
     r'|(system|admin)\s*:', re.I)
@@ -142,5 +267,22 @@ def mitigate(call_next, question, config, context):
         # Cache only successful answers
         if status == 'ok':
             cache_set(question, result, context)
+
+    # 5. Post-process answer: strip PII traces + fix format
+    if result and result.get('answer'):
+        cleaned = clean_answer(result['answer'])
+        if cleaned != result['answer']:
+            log("ANSWER_CLEANED", {"qid": qid, "before": result['answer'][:80], "after": cleaned[:80]})
+            result = dict(result)
+            result['answer'] = cleaned
+
+    # 6. Arithmetic validation: recompute from trace and fix if wrong
+    if result and result.get('answer') and result.get('trace'):
+        fixed_ans, was_fixed = validate_and_fix_answer(
+            result['answer'], result.get('trace', []), question)
+        if was_fixed:
+            log("ARITHMETIC_FIXED", {"qid": qid, "before": result['answer'][:80], "after": fixed_ans[:80]})
+            result = dict(result)
+            result['answer'] = fixed_ans
 
     return result

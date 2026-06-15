@@ -1,21 +1,21 @@
 {
   "team": "2A202600938-LamVanTai",
   "phase": "public",
-  "headline": 84.17,
+  "headline": 82.88,
   "sub": {
-    "correct": 0.3967,
-    "quality": 0.638,
+    "correct": 0.3717,
+    "quality": 0.623,
     "error": 1.0,
-    "latency": 0.5319,
+    "latency": 0.6374,
     "cost": 1.0,
-    "drift": 0.9636,
-    "prompt": 0.6765
+    "drift": 0.8579,
+    "prompt": 0.6528
   },
   "diag_f1": 0.824,
   "n": 120,
-  "n_correct": 41,
+  "n_correct": 35,
   "judge_mode": "offline",
   "weights_hash": "e81a8ed58d93",
   "key_hash": "9a800fa6968d",
-  "sig": "734c8a2e9e52a96549538100457532218e8b4dad9de2913d6fcd7906281a75d5"
+  "sig": "b8def99385b78fc3660f8421a7dd54218d2f02151783ed0be70b7e3504856cb5"
 }
