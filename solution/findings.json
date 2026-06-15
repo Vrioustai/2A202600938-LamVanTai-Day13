@@ -1,12 +1,76 @@
 {
-  "team": "TODO-team-name",
+  "team": "2A202600938-LamVanTai",
   "schema_version": 1,
   "findings": [
     {
+      "fault_class": "infinite_loop",
+      "evidence": {
+        "metric": "status=loop, retry triggered",
+        "observed": "prac-006 triggered loop status twice (attempt 1 and 2), calc_shipping called TWICE in same request (tools: [check_stock, get_discount, calc_shipping, calc_shipping])",
+        "trace_ids": ["prac-006"]
+      },
+      "root_cause": "loop_guard was false + tool_budget=0 allowed agent to call calc_shipping repeatedly when coupon+city combination caused confusion",
+      "suggested_fix": "config: loop_guard=true, tool_budget=5; prompt: instruct agent to call each tool ONCE only"
+    },
+    {
+      "fault_class": "arithmetic_error",
+      "evidence": {
+        "metric": "output format inconsistent, mixed currency symbols",
+        "observed": "prac-001: 'Total: $88,000,000.00 VND' (dollar + VND mixed), prac-018: 'Total: $70041000.00 VND', prac-020: 'Total: $54,026,750.00 VND' - dollar sign used instead of pure VND format",
+        "trace_ids": ["prac-001", "prac-018", "prac-020"]
+      },
+      "root_cause": "Original prompt had no explicit output format instruction. temperature=1.6 caused inconsistent formatting",
+      "suggested_fix": "config: temperature=0.2; prompt: specify exact output format 'Total: X,XXX,XXX VND' with no dollar sign"
+    },
+    {
+      "fault_class": "tool_overuse",
+      "evidence": {
+        "metric": "tools_count > 3 per request",
+        "observed": "prac-006: 4 tool calls (calc_shipping called twice), prac-019: 3 tools, prac-001: 3 tools, prac-020: 2 tools. Average tools_count=2.6 vs expected 2",
+        "trace_ids": ["prac-006", "prac-019", "prac-001"]
+      },
+      "root_cause": "tool_budget=0 (unlimited), no prompt instruction to minimize tool calls",
+      "suggested_fix": "config: tool_budget=5; prompt: 'Call each tool exactly ONCE'"
+    },
+    {
       "fault_class": "latency_spike",
-      "evidence": {"metric": "latency_p95_ms", "observed": "TODO from your telemetry", "trace_ids": []},
-      "root_cause": "TODO: what config knob or behavior causes it?",
-      "suggested_fix": "TODO: config change and/or wrapper mitigation"
+      "evidence": {
+        "metric": "latency_ms and wall_time_ms",
+        "observed": "avg latency ~8,000ms, max wall_time=42,243ms (prac-006 with retries), P95 ~13,000ms. Loop retries multiplied latency 3-4x",
+        "trace_ids": ["prac-006", "prac-019"]
+      },
+      "root_cause": "infinite_loop caused retries (3 attempts x ~10s each = 30s+). context_size=8 sent too much history increasing prompt tokens",
+      "suggested_fix": "config: loop_guard=true, context_size=4, context_reset_every=5; wrapper: retry with backoff only on error status, not loop"
+    },
+    {
+      "fault_class": "cost_blowup",
+      "evidence": {
+        "metric": "cost_usd per request",
+        "observed": "avg cost ~$0.019/request (19x more than expected ~$0.001). prac-020: $0.022697, prac-006: $0.022504. prompt_tokens 40,000-44,000 per request (very high)",
+        "trace_ids": ["prac-006", "prac-019", "prac-020"]
+      },
+      "root_cause": "verbose_system=true inflated prompt tokens, context_size=8 added 8 turns of history, model_price_tier=premium",
+      "suggested_fix": "config: verbose_system=false, context_size=4, model_price_tier=nano, max_completion_tokens=500"
+    },
+    {
+      "fault_class": "tool_failure",
+      "evidence": {
+        "metric": "answer contains 'not found' or 'not served'",
+        "observed": "prac-016: 'Item nokia not found' (normalize_unicode=false may cause diacritic issues), prac-007: 'Cannot calculate total (Da Lat is not served for shipping)' - unicode city name Da Lat/Đà Lạt not normalized",
+        "trace_ids": ["prac-016", "prac-007"]
+      },
+      "root_cause": "normalize_unicode=false caused city/item name lookup failures for Vietnamese diacritics. catalog_override blocked macbook",
+      "suggested_fix": "config: normalize_unicode=true, catalog_override={}"
+    },
+    {
+      "fault_class": "quality_drift",
+      "evidence": {
+        "metric": "answer consistency across turns",
+        "observed": "prac-006 turn=0 answer 'Total: 46,?' (truncated/broken), prac-020 turn=1 answer differs from turn=0 ($54,026,750 vs $54,000,000). session_drift_rate=0.06 degraded multi-turn quality",
+        "trace_ids": ["prac-006", "prac-020"]
+      },
+      "root_cause": "session_drift_rate=0.06 introduced quality degradation over turns. self_consistency=1 no voting to correct errors",
+      "suggested_fix": "config: session_drift_rate=0.0, self_consistency=3, context_reset_every=5"
     }
   ]
 }
