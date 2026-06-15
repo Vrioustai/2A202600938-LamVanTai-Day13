@@ -1,0 +1,21 @@
+{
+  "team": "2A202600938-LamVanTai",
+  "phase": "private",
+  "headline": 55.09,
+  "sub": {
+    "correct": 0.0,
+    "quality": 0.1828,
+    "error": 0.0,
+    "latency": 1.0,
+    "cost": 1.0,
+    "drift": 0.8361,
+    "prompt": 0.4876
+  },
+  "diag_f1": 1.0,
+  "n": 80,
+  "n_correct": 0,
+  "judge_mode": "offline",
+  "weights_hash": "e81a8ed58d93",
+  "key_hash": "7e3905b75db0",
+  "sig": "c0fbf074416fce3b401644c4686a6e5481dbdaf6ef7154681339d4493ccdb0fd"
+}
